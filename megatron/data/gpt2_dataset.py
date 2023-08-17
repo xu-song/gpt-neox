@@ -25,6 +25,16 @@ import torch
 
 from megatron import mpu, print_rank_0
 
+import yaml
+import json
+import random
+from tokenizers import Tokenizer
+from deepspeed.utils import logger
+
+
+debug_config = yaml.load(open("configs/debug.yml"), Loader=yaml.CLoader)
+tokenizer = Tokenizer.from_file(debug_config["vocab-file"])
+
 
 class GPT2Dataset(torch.utils.data.Dataset):
     def __init__(
@@ -79,6 +89,7 @@ class GPT2Dataset(torch.utils.data.Dataset):
             doc_index_l = self.sample_idx[idx + 1][0]
             offset_f = self.sample_idx[idx][1]
             offset_l = self.sample_idx[idx + 1][1]
+            all_doc_idx = []
             # If we are within the same document, just extract the chunk.
             if doc_index_f == doc_index_l:
                 sample = self.indexed_dataset.get(
@@ -86,22 +97,28 @@ class GPT2Dataset(torch.utils.data.Dataset):
                     offset=offset_f,
                     length=offset_l - offset_f + 1,
                 )
+                all_doc_idx.append(self.doc_idx[doc_index_f])
             else:
                 # Otherwise, get the rest of the initial document.
                 sample_list = [
                     self.indexed_dataset.get(self.doc_idx[doc_index_f], offset=offset_f)
                 ]
+                all_doc_idx.append(self.doc_idx[doc_index_f])
                 # Loop over all in between documents and add the entire document.
                 for i in range(doc_index_f + 1, doc_index_l):
                     sample_list.append(self.indexed_dataset.get(self.doc_idx[i]))
+                    all_doc_idx.append(self.doc_idx[i])
                 # And finally add the relevant portion of last document.
                 sample_list.append(
                     self.indexed_dataset.get(
                         self.doc_idx[doc_index_l], length=offset_l + 1
                     )
                 )
+                all_doc_idx.append(self.doc_idx[doc_index_l])
                 sample = np.concatenate(sample_list)
-
+            if random.random() < debug_config["log-prob"]:
+                logger.info(json.dumps({"dataset_name": self.name, "sample_idx": int(idx), "doc_idx": [int(kk) for kk in all_doc_idx], 
+                                  "text": tokenizer.decode(sample, skip_special_tokens=False)}, ensure_ascii=False))
             return {"text": np.array(sample, dtype=np.int64)}
         except IndexError:
             new_idx = idx % len(self)
@@ -109,6 +126,7 @@ class GPT2Dataset(torch.utils.data.Dataset):
                 f"WARNING: Got index out of bounds error with index {idx} - taking modulo of index instead ({new_idx})"
             )
             return self[new_idx]
+            
 
 
 def _build_index_mappings(
@@ -149,7 +167,7 @@ def _build_index_mappings(
             or (not os.path.isfile(shuffle_idx_filename))
         ):
             print_rank_0(
-                " > WARNING: could not find index map files, building "
+                f" > WARNING: could not find index map files for {_filename}, building "
                 "the indices on rank 0 ..."
             )
             # doc-idx.

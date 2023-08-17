@@ -1,0 +1,5 @@
+# config for data log 
+{
+  "log-prob": 0.1,
+  "vocab-file": "data/vocab/20B_tokenizer.json",
+}
